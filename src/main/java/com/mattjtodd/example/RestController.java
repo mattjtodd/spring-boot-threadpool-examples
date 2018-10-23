@@ -1,86 +1,57 @@
 package com.mattjtodd.example;
 
-import javaslang.control.Try;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.actuate.metrics.CounterService;
+import org.springframework.boot.actuate.metrics.buffer.BufferCounterService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.context.request.async.DeferredResult;
 
-import java.util.Objects;
-import java.util.concurrent.Callable;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.function.Supplier;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
-import static java.util.Objects.nonNull;
+import static java.util.stream.Collectors.toList;
 
 @org.springframework.web.bind.annotation.RestController
 public class RestController {
 
-    private static final Logger LOG = Logger.getLogger(RestController.class.getName());
+    private final ScheduledExecutorService scheduledExecutorService;
 
-    private final ExecutorService executorService;
+    @Autowired
+    @Qualifier("counter")
+    private CounterService counterService;
 
-    RestController(ExecutorService executorService) {
-        this.executorService = Objects.requireNonNull(executorService);
+    RestController() {
+        this.scheduledExecutorService = Executors.newScheduledThreadPool(100);
     }
 
-    @RequestMapping("/synchronous")
-    public Boolean synchronous(@RequestParam(name = "sleep", defaultValue = "1000") int sleep) {
-        return logEntryExit(() -> work(sleep));
-    }
+    @RequestMapping("/asyncNioDeferredResult")
+    public DeferredResult<Boolean> asyncNioDeferredResult(@RequestParam(name = "sleep", defaultValue = "1000") int sleep) {
+        DeferredResult<Boolean> result = new DeferredResult<>(100000L, Boolean.FALSE);
 
-    @RequestMapping("/asyncTaskExecutor")
-    public Callable<Boolean> asyncTaskExecutor(@RequestParam(name = "sleep", defaultValue = "1000") int sleep) {
-        return logEntryExit(() -> () -> work(sleep));
-    }
+        scheduledExecutorService.schedule(() -> {
 
-    @RequestMapping("/asyncDeferredResult")
-    public DeferredResult<Boolean> asyncDeferredResult(@RequestParam(name = "sleep", defaultValue = "1000") int sleep) {
-        return logEntryExit(() -> {
-            DeferredResult<Boolean> result = new DeferredResult<>(100000L, Boolean.FALSE);
+            IntStream
+                    .range(0, sleep)
+                    .mapToObj(__ -> UUID.randomUUID().toString())
+                    .collect(toList());
 
-            Try
-                .of(() -> CompletableFuture.supplyAsync(() -> work(sleep), executorService))
-                .map(future -> future.handle((workResult, thrown) -> nonNull(workResult) ? result.setResult(workResult) : result.setErrorResult(thrown)))
-                .onFailure(result::setErrorResult);
+            result.setResult(Boolean.TRUE);
+        }, sleep, TimeUnit.MILLISECONDS);
 
-            return result;
-        });
-    }
-
-    @ExceptionHandler(RejectedExecutionException.class)
-    private ResponseEntity<Void> handleResourceNotFoundException(RejectedExecutionException e) {
-        return ResponseEntity
-            .status(HttpStatus.SERVICE_UNAVAILABLE)
-            .build();
-    }
-
-    private static <T> T logEntryExit(Supplier<T> work) {
-        LOG.info("Controller Thread consumed");
-        T result = work.get();
-        LOG.info("Controller Thread returned");
         return result;
-    }
-
-    private static Boolean work(int sleep) {
-        LOG.info("Starting work..");
-        try {
-            Thread.sleep(sleep);
-            return true;
-        } catch (InterruptedException e) {
-            LOG.log(Level.SEVERE, "Sleep error", e);
-            return false;
-        }
-        finally {
-            LOG.info("Completed work..");
-        }
     }
 }
